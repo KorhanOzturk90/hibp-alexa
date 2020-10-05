@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/KorhanOzturk90/alexa-skills-kit-golang"
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/ericdaugherty/alexa-skills-kit-golang"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -39,10 +39,10 @@ func (r requestHandler) OnSessionStarted(context context.Context, request *alexa
 }
 
 func (r requestHandler) OnLaunch(context context.Context, request *alexa.Request, session *alexa.Session, aContext *alexa.Context, response *alexa.Response) error {
-	speechText := "Welcome to have I been hacked. "
+	speechText := "Welcome to Breach Checker. Use this app to check if your account has been compromised in a data breach "
 	fmt.Printf("OnLaunch requestId=%s, sessionId=%s", request.RequestID, session.SessionID)
 
-	response.SetSimpleCard("Am I hacked", speechText)
+	response.SetSimpleCard("Breach Checker. Use this app to check if your account has been compromised in a data breach\n", speechText)
 	response.SetOutputText(speechText)
 	response.SetRepromptText(speechText)
 
@@ -60,30 +60,47 @@ func (r requestHandler) OnIntent(context context.Context, request *alexa.Request
 		endpoint := aContext.System.APIEndpoint
 		apiAccessToken := aContext.System.APIAccessToken
 
-		breachesFound := isEmailCompromised(getUserEmail(endpoint, apiAccessToken))
-
-		var speechText strings.Builder
-		if len(breachesFound) == 0 {
-			speechText.WriteString("Your email has not been involved in any data breaches. Yay!")
+		email, alexaErr := getUserEmail(endpoint, apiAccessToken)
+		if alexaErr != nil {
+			card := &alexa.Card{Type: "AskForPermissionsConsent", Permissions: []string{"alexa::profile:email:read"}}
+			response.Card = card
+			response.SetOutputText("In order to find if your account is breached, breach checker will need access to your email address. Go to the home screen in your Alexa app and grant me permissions.")
+			response.ShouldSessionEnd = false
 		} else {
-			speechText.WriteString("Your email was included in the following breaches: ")
-			for _, b := range breachesFound {
-				fmt.Printf("email found in %v breach", b)
-				speechText.WriteString(b.Name + ", ")
-			}
-		}
+			breachesFound := isEmailCompromised(email)
 
-		response.SetSimpleCard("Am I hacked", speechText.String())
-		response.SetOutputText(speechText.String())
-		response.ShouldSessionEnd = true
+			var speechText strings.Builder
+			if len(breachesFound) == 0 {
+				speechText.WriteString("Your email has not been involved in any data breaches. Yay!")
+			} else {
+				speechText.WriteString("Your email was included in the following breaches: ")
+				for _, b := range breachesFound {
+					fmt.Printf("email found in %v breach", b)
+					speechText.WriteString(b.Name + ", ")
+				}
+			}
+			response.SetSimpleCard("Am I hacked", speechText.String())
+			response.SetOutputText(speechText.String())
+			response.ShouldSessionEnd = true
+		}
 
 	case "AMAZON.HelpIntent":
 		fmt.Println("AMAZON.HelpIntent triggered")
-		speechText := "You can say hello to me!"
+		speechText := "You can use this app to check if your account has been compromised in a data breach"
 
-		response.SetSimpleCard("HelloWorld", speechText)
+		response.SetSimpleCard("Use this app to check if your account has been compromised in a data breach", speechText)
 		response.SetOutputText(speechText)
 		response.SetRepromptText(speechText)
+		response.ShouldSessionEnd = false
+
+	case "AMAZON.StopIntent":
+		fmt.Println("AMAZON.StopIntent triggered")
+		response.ShouldSessionEnd = true
+
+	case "AMAZON.CancelIntent":
+		fmt.Println("AMAZON.CancelIntent triggered")
+		response.ShouldSessionEnd = true
+
 	default:
 		return errors.New("Invalid Intent")
 	}
@@ -91,7 +108,7 @@ func (r requestHandler) OnIntent(context context.Context, request *alexa.Request
 	return nil
 }
 
-func getUserEmail(endpoint string, apiAccessToken string) string {
+func getUserEmail(endpoint string, apiAccessToken string) (string, error) {
 	client := &http.Client{}
 	url := endpoint + "/v2/accounts/~current/settings/Profile.email"
 	req, err := http.NewRequest("GET", url, nil)
@@ -105,9 +122,13 @@ func getUserEmail(endpoint string, apiAccessToken string) string {
 		fmt.Print(err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == 403 {
+		fmt.Printf("user email not granted \n")
+		return "", errors.New("permission required")
+	}
 	body, err := ioutil.ReadAll(resp.Body)
 	fmt.Printf("user email: %v", string(body))
-	return trimEmail(body)
+	return trimEmail(body), nil
 }
 
 func isEmailCompromised(email string) []breach {
@@ -125,6 +146,7 @@ func isEmailCompromised(email string) []breach {
 	}
 	defer resp.Body.Close()
 	fmt.Printf("hibp response %v", resp)
+
 	body, err := ioutil.ReadAll(resp.Body)
 	fmt.Printf("body: %v", string(body))
 	jsonErr := json.Unmarshal(body, &breachList)
